@@ -214,8 +214,140 @@ def class_scores_in_matrix(embed, input_label, relation_net):
     return cls_loss
 
 
+for epoch in range(opt.nepoch):
+    FP = 0
+    mean_lossD = 0
+    mean_lossG = 0
+    for i in range(0, data.ntrain, opt.batch_size):
+        ############################
+        # (1) Update D network: optimize WGAN-GP objective, Equation (2)
+        ###########################
+        for p in netD.parameters():  # reset requires_grad
+            p.requires_grad = True  # they are set to False below in netG update
+        for p in netMap.parameters():  # reset requires_grad
+            p.requires_grad = True
+        for p in F_ha.parameters():  # reset requires_grad
+            p.requires_grad = True
+        for p in selfattn.parameters():  # reset requires_grad
+            p.requires_grad = True
+        for iter_d in range(opt.critic_iter):
+            sample()
+            netD.zero_grad()
+            netMap.zero_grad()
+            #
+            # train with realG
+            # sample a mini-batch
+            sparse_real = opt.resSize - input_res[1].gt(0).sum()
+            # multi-head attention
 
 
+            input_multi_att = selfattn(input_res)
+            input_multi_att=torch.add(input_multi_att, input_res)
+
+            embed_real, outz_real = netMap(input_multi_att)
+            criticD_real = netD(input_res, input_att)
+            criticD_real = criticD_real.mean()
+
+            # CONTRASITVE LOSS
+            real_ins_contras_loss = contras_criterion(outz_real, input_label)
+
+            outz1 = outz_real.t()
+            att = input_att.t()
+            att_com = torch.cat((outz1, att.detach()))
+            a = torch.arange(1024)
+            aa = torch.cat((a, a))
+            # ab = torch.cat((aa, aa))
+            real_att_contras_loss = att_contras_criterion(att_com, aa.detach())
+
+            # train with fakeG
+            noise_gen.normal_(0, 1)
+            fake = netG(noise_gen, input_att)
+            fake_norm = fake.data[0].norm()
+            sparse_fake = fake.data[0].eq(0).sum()
+            criticD_fake = netD(fake.detach(), input_att)
+            criticD_fake = criticD_fake.mean()
+
+            # gradient penalty
+            gradient_penalty = calc_gradient_penalty(netD, input_multi_att, fake.data, input_att)
+            Wasserstein_D = criticD_real - criticD_fake
+
+            cls_loss_real = class_scores_for_loop(embed_real, input_label, F_ha)
+
+            D_cost = criticD_fake - criticD_real + gradient_penalty + real_ins_contras_loss + cls_loss_real + real_att_contras_loss
+
+            D_cost.backward()
+            optimizerD.step()
+        ############################
+        # (2) Update G network: optimize WGAN-GP objective, Equation (2)
+        ###########################
+        for p in netD.parameters():  # reset requires_grad
+            p.requires_grad = False  # avoid computation
+        for p in netMap.parameters():  # reset requires_grad
+            p.requires_grad = False
+        for p in F_ha.parameters():  # reset requires_grad
+            p.requires_grad = False
+        for p in selfattn.parameters():  # reset requires_grad
+            p.requires_grad = False
+
+        netG.zero_grad()
+        noise_gen.normal_(0, 1)
+        fake = netG(noise_gen, input_att)
+
+        config = {
+            "num_of_attention_heads": 3,
+            "hidden_size": 2048
+        }
+
+        selfattn = BertSelfAttention(config).cuda()
+        fake1 = selfattn(fake)
+        fake1 = torch.add(fake1, fake)
+        embed_fake, outz_fake = netMap(fake1)
+
+        criticG_fake = netD(fake, input_att)
+
+        criticG_fake = criticG_fake.mean()
+        G_cost = -criticG_fake
+
+        input_res1 = selfattn(input_res)
+        input_res1 = torch.add(input_res1, input_res)
+        embed_real, outz_real = netMap(input_res1)
+
+        all_outz = torch.cat((outz_fake, outz_real), dim=0)
+        all_att = torch.cat((input_att.detach(), input_att.detach()), dim=0)
+
+        fake_ins_contras_loss = contras_criterion(all_outz, torch.cat((input_label, input_label), dim=0))
+
+        outz1 = all_outz.t()
+        att = all_att.t()
+        att_com = torch.cat((outz1, att.detach()))
+        a = torch.arange(1024)
+        aa = torch.cat((a, a))
+        ab = torch.cat((aa, aa))
+        fake_att_contras_loss = att_contras_criterion(att_com, aa.detach())
+
+        cls_loss_fake = class_scores_for_loop(embed_fake, input_label, F_ha)
+
+        errG = G_cost + opt.ins_weight * fake_ins_contras_loss + opt.cls_weight * cls_loss_fake + opt.ins_weight * fake_att_contras_loss  # + opt.ins_weight * c_errG
+
+        errG.backward()
+        optimizerG.step()
+
+    F_ha.zero_grad()
+    if (epoch + 1) % opt.lr_decay_epoch == 0:
+        for param_group in optimizerD.param_groups:
+            param_group['lr'] = param_group['lr'] * opt.lr_dec_rate
+        for param_group in optimizerG.param_groups:
+            param_group['lr'] = param_group['lr'] * opt.lr_dec_rate
+
+    mean_lossG /= data.ntrain / opt.batch_size
+    mean_lossD /= data.ntrain / opt.batch_size
+    print(
+        '[%d/%d] Loss_D: %.4f Loss_G: %.4f, Wasserstein_dist: %.4f, real_ins_contras_loss:%.4f, fake_ins_contras_loss:%.4f, cls_loss_real: %.4f, cls_loss_fake: %.4f'
+        % (
+        epoch, opt.nepoch, D_cost, G_cost, Wasserstein_D, real_ins_contras_loss, fake_ins_contras_loss, cls_loss_real,
+        cls_loss_fake))
+
+    # evaluate the model, set G to evaluation mode
     netG.eval()
 
     for p in netMap.parameters():  # reset requires_grad
