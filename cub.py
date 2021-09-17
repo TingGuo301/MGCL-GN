@@ -20,7 +20,7 @@ from multi_head import BertSelfAttention
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--dataset', default='CUB', help='FLO')
-parser.add_argument('--dataroot', default='D:/Gt/iccv二审/CE-GZSL-master - 副本 (2)/CE - 副本/data', help='path to dataset')
+parser.add_argument('--dataroot', default='/data', help='path to dataset')
 parser.add_argument('--matdataset', default=True, help='Data in matlab format')
 parser.add_argument('--image_embedding', default='res101')
 parser.add_argument('--class_embedding', default='sent', help='att or sent')
